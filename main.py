@@ -6,7 +6,7 @@ import os
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 DEFAULT_CHANNEL = "@basit23144"
-BOT_USERNAME = "basytforearning_bot"
+BOT_USERNAME = "get500dollar_bot"
 
 
 # قواعد بيانات مؤقتة في الذاكرة
@@ -607,4 +607,5 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
+
     application.run_polling()
