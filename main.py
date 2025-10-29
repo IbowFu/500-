@@ -74,13 +74,27 @@ PAY_METHODS = [
 
 # ========================= دالة ضبط الرصيد عند تجاوز 470 =========================
 def apply_balance_cap(user_data):
-    balance = user_data["balance"]
-    if balance > 470:
-        remainder = balance % 470
-        base = balance - remainder
-        deduction = random.randint(1, 10)
-        user_data["balance"] = max(0, base - deduction)
-
+    """
+    تخفض الرصيد فورًا ومتكررًا حتى يصبح أقل من 485$،
+    باستخدام القاعدة: (balance - (balance % 470)) - random(1..10)
+    """
+    while user_data["balance"] >= 485:
+        balance = user_data["balance"]
+        # إذا كان الرصيد بين 485 و 469 (أقل من 470)، نخسر جزءًا عشوائيًا مباشرًا
+        if balance < 470:
+            deduction = random.randint(1, min(10, balance))
+            new_balance = max(0, balance - deduction)
+        else:
+            remainder = balance % 470
+            base = balance - remainder
+            deduction = random.randint(1, 10)
+            new_balance = max(0, base - deduction)
+        
+        # تجنب الحلقة اللانهائية
+        if new_balance >= balance:
+            break
+        
+        user_data["balance"] = new_balance
 # ========================= لوحات الأزرار =========================
 def keyboard_subscribe():
     channel = DEFAULT_CHANNEL
@@ -588,4 +602,3 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
     application.run_polling()
-
