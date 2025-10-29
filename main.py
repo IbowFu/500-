@@ -462,6 +462,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back_main" or data == "admin_panel":
         await safe_edit_message_text(query, MESSAGES["main_menu"], keyboard_main(uid), parse_mode="Markdown")
         return
+    if data == "back_withdraw":
+        await safe_edit_message_text(query, MESSAGES["withdraw_menu"], keyboard_pay())
+        return
     if data == "none":
         await query.answer("لا يوجد أعضاء حالياً", show_alert=True)
         return
@@ -656,3 +659,4 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
     application.run_polling()
+
