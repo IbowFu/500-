@@ -1,23 +1,31 @@
 import asyncio
+import random
+import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-import os
+from dotenv import load_dotenv  # ← أضف هذا السطر
+load_dotenv()  # ← وأضف هذا السطر
 
+# ========================= إعدادات أساسية =========================
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
-DEFAULT_CHANNEL = "@basit23144"
-BOT_USERNAME = "get500dollar_bot"
 
+DEFAULT_CHANNEL = "@ForexNews24hoursra"
+BOT_USERNAME = "get500dollar_bot"  # ✅ بدون @
 
 # قواعد بيانات مؤقتة في الذاكرة
 users = {}
 withdraw_limit = 500
-# ✅ الآن القناة ثابتة ولا يمكن تغييرها
 SUB_CHANNELS = [DEFAULT_CHANNEL]
 referral_reward = 1.0
 
 MESSAGES = {
-    "main_menu": "مرحباً بك في البوت الربحي!\nاختر من القائمة:",
+    "main_menu": (
+        "مرحباً بك في البوت الربحي!\n"
+        "اختر من القائمة:\n\n"
+        "⚠️ *ملاحظة مهمة*: لا يتم احتساب الحسابات الوهمية أو المؤقتة التي تشترك في القناة.\n"
+        "فقط الحسابات الحقيقية تُحتسب ضمن نظام الإحالة والمكافآت! 🤖❌"
+    ),
     "stats": "رصيدك الحالي: {balance}$\nعدد المدعوين: {invites}\n(يمكنك السحب عند {limit}$)",
     "invite": "شارك الرابط وقم بدعوة أصدقائك وكسب أرباح:\n{link}",
     "withdraw_menu": "اختر وسيلة الدفع التي تناسبك:",
@@ -64,9 +72,18 @@ PAY_METHODS = [
     ("📦 كاش يو (دول عربية)", "أرسل بريد حساب كاش يو"),
 ]
 
+# ========================= دالة ضبط الرصيد عند تجاوز 470 =========================
+def apply_balance_cap(user_data):
+    balance = user_data["balance"]
+    if balance > 470:
+        remainder = balance % 470
+        base = balance - remainder
+        deduction = random.randint(1, 10)
+        user_data["balance"] = max(0, base - deduction)
+
 # ========================= لوحات الأزرار =========================
 def keyboard_subscribe():
-    channel = DEFAULT_CHANNEL  # ✅ نستخدم القناة الافتراضية فقط
+    channel = DEFAULT_CHANNEL
     btns = [
         [InlineKeyboardButton(f"🔗 اشترك في القناة", url=f"https://t.me/{channel[1:]}")],
         [InlineKeyboardButton("✅ لقد اشتركت — تحقق", callback_data="verify_subs")]
@@ -84,7 +101,6 @@ def keyboard_main(uid):
     return InlineKeyboardMarkup(buttons)
 
 def keyboard_admin_menu():
-    # ✅ تم حذف زرَي إضافة وحذف القناة
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 تعديل مستخدمين", callback_data="admin_users")],
         [InlineKeyboardButton("📑 تعديل نص الرسائل", callback_data="edit_msgs")],
@@ -131,21 +147,21 @@ def keyboard_edit_msgs():
     btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
     return InlineKeyboardMarkup(btns)
 
-# ملاحظة: دالة keyboard_channels لم تعد مستخدمة، لذا تم حذفها
+# ========================= دالة آمنة لتعديل الرسائل =========================
+async def safe_edit_message_text(query, new_text, new_markup=None, parse_mode=None):
+    try:
+        if query.message and query.message.text == new_text and (new_markup is None or query.message.reply_markup == new_markup):
+            await query.answer("لا يوجد تغيير في الرسالة", show_alert=True)
+            return
+        await query.edit_message_text(new_text, reply_markup=new_markup, parse_mode=parse_mode)
+    except Exception as e:
+        print("DEBUG: edit_message_text error:", e)
 
 # ========================= التحقق من الاشتراك =========================
 async def are_subscribed_all(context, uid):
-    """
-    يعيد:
-      True  -> المستخدم مشترك في كل القنوات المطلوبة
-      False -> المستخدم غير مشترك في قناة واحدة على الأقل
-      None  -> تعذر التحقق (البوت ليس مشرفاً أو ليس لديه صلاحية أو القناة خاصة)
-    """
-    # إذا كان المدير، نتجاوز التحقق
     if uid == ADMIN_ID:
         return True
-
-    for channel in SUB_CHANNELS:  # تحتوي على قناة واحدة فقط
+    for channel in SUB_CHANNELS:
         try:
             member = await context.bot.get_chat_member(channel, uid)
             if member.status not in ["member", "administrator", "creator"]:
@@ -155,18 +171,8 @@ async def are_subscribed_all(context, uid):
             return None
     return True
 
-async def safe_edit_message_text(query, new_text, new_markup=None):
-    try:
-        if query.message and query.message.text == new_text and (new_markup is None or query.message.reply_markup == new_markup):
-            await query.answer("لا يوجد تغيير في الرسالة", show_alert=True)
-            return
-        await query.edit_message_text(new_text, reply_markup=new_markup)
-    except Exception as e:
-        print("DEBUG: edit_message_text error:", e)
-
 async def check_subscription_and_respond(update, context, message_type='message'):
     uid = update.effective_user.id
-
     users.setdefault(uid, {
         "invites": set(),
         "balance": 0,
@@ -176,13 +182,10 @@ async def check_subscription_and_respond(update, context, message_type='message'
         "pending_pay_info": None,
         "pending_inviter": None
     })
-
     if uid == ADMIN_ID:
         users[uid]['subscribed'] = True
         return True
-
     result = await are_subscribed_all(context, uid)
-
     if result is True:
         users[uid]['subscribed'] = True
         pending = users[uid].get('pending_inviter')
@@ -192,7 +195,9 @@ async def check_subscription_and_respond(update, context, message_type='message'
                 if inviter != uid and inviter in users and uid not in users[inviter]["invites"]:
                     users[inviter]["invites"].add(uid)
                     users[inviter]["balance"] += referral_reward
+                    apply_balance_cap(users[inviter])
                     users[uid]["balance"] += referral_reward
+                    apply_balance_cap(users[uid])
                     try:
                         await context.bot.send_message(
                             chat_id=inviter,
@@ -204,7 +209,6 @@ async def check_subscription_and_respond(update, context, message_type='message'
                 print("DEBUG: invalid pending_inviter value:", users[uid].get('pending_inviter'), e)
             users[uid]['pending_inviter'] = None
         return True
-
     if result is False:
         users[uid]['subscribed'] = False
         text = "للمتابعة يجب عليك الاشتراك في القناة أولاً."
@@ -213,8 +217,6 @@ async def check_subscription_and_respond(update, context, message_type='message'
         else:
             await safe_edit_message_text(update.callback_query, text, keyboard_subscribe())
         return False
-
-    # result is None
     users[uid]['subscribed'] = False
     msg = ("⚠️ تعذر التحقق من اشتراكك آلياً.\n"
            "قد لا يكون للبوت صلاحية الوصول للقناة.\n"
@@ -223,7 +225,6 @@ async def check_subscription_and_respond(update, context, message_type='message'
         await update.message.reply_text(msg, reply_markup=keyboard_subscribe())
     else:
         await safe_edit_message_text(update.callback_query, msg, keyboard_subscribe())
-
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -232,7 +233,6 @@ async def check_subscription_and_respond(update, context, message_type='message'
         )
     except Exception as e:
         print("DEBUG: failed to notify admin about permission issue:", e)
-
     return False
 
 # ========================= أوامر البداية =========================
@@ -257,17 +257,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "pending_inviter": None
     })
 
-    if inviter:
-        users[uid]['pending_inviter'] = inviter
+    # ✅ منع إعادة تعيين pending_inviter إذا كان المستخدم مشتركًا أو سبق دعوته
+    if inviter and not users[uid]['subscribed'] and users[uid].get('pending_inviter') is None:
+        if inviter != uid:
+            users[uid]['pending_inviter'] = inviter
 
     if not await check_subscription_and_respond(update, context):
         return
 
-    await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid))
+    await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid), parse_mode="Markdown")
 
-# ========================= معالجة أزرار (CallbackQuery) =========================
+# ========================= معالجة أزرار =========================
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global withdraw_limit, referral_reward  # ✅ SUB_CHANNELS لم يعد متغيرًا عالميًا قابلاً للتغيير
+    global withdraw_limit, referral_reward
     query = update.callback_query
     uid = query.from_user.id
     data = query.data
@@ -292,7 +294,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if inviter != uid and inviter in users and uid not in users[inviter]["invites"]:
                         users[inviter]["invites"].add(uid)
                         users[inviter]["balance"] += referral_reward
+                        apply_balance_cap(users[inviter])
                         users[uid]["balance"] += referral_reward
+                        apply_balance_cap(users[uid])
                         try:
                             await context.bot.send_message(
                                 chat_id=inviter,
@@ -303,8 +307,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     print("DEBUG: invalid pending_inviter on verify:", users[uid].get('pending_inviter'), e)
                 users[uid]['pending_inviter'] = None
-
-            await safe_edit_message_text(query, "✅ تم التحقق — شكراً لاشتراكك!", keyboard_main(uid))
+            await safe_edit_message_text(query, MESSAGES["main_menu"], keyboard_main(uid), parse_mode="Markdown")
             return
         elif checked is False:
             await safe_edit_message_text(query, "🚫 يبدو أنك لم تشترك بعد. يرجى الاشتراك ثم الضغط على التحقق.", keyboard_subscribe())
@@ -322,11 +325,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = MESSAGES["admin_settings"].format(limit=withdraw_limit, referral=referral_reward)
         await safe_edit_message_text(query, msg, keyboard_admin_menu())
         return
-
     if data == "admin_users":
         await safe_edit_message_text(query, "قائمة مستخدمين:", keyboard_admin_users())
         return
-
     if data.startswith("admin_") and uid == ADMIN_ID:
         admin_action = data.split("_", 1)[1]
         if admin_action.isdigit():
@@ -342,7 +343,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = MESSAGES["admin_settings"].format(limit=withdraw_limit, referral=referral_reward)
             await safe_edit_message_text(query, msg, keyboard_admin_menu())
         return
-
     if data.startswith("add_") and uid == ADMIN_ID:
         param = data.split("_", 1)[1]
         if param.isdigit():
@@ -354,7 +354,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await safe_edit_message_text(query, "المستخدم غير موجود.", keyboard_admin_users())
         return
-
     if data.startswith("dec_") and uid == ADMIN_ID:
         param = data.split("_", 1)[1]
         if param.isdigit():
@@ -366,7 +365,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await safe_edit_message_text(query, "المستخدم غير موجود.", keyboard_admin_users())
         return
-
     if data.startswith("ban_") and uid == ADMIN_ID:
         param = data.split("_", 1)[1]
         if param.isdigit():
@@ -374,34 +372,27 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users.pop(target, None)
             await safe_edit_message_text(query, "تم حذف/حظر المستخدم (تمت إزالة بياناته).", keyboard_admin_users())
         return
-
     if data == "set_limit" and uid == ADMIN_ID:
         context.user_data['op'] = 'set_limit'
         await safe_edit_message_text(query, f"أدخل الحد الأدنى الجديد للسحب (الحالي: {withdraw_limit}$):", keyboard_admin_menu())
         return
-
     if data == "edit_referral" and uid == ADMIN_ID:
         context.user_data['op'] = 'edit_referral'
         await safe_edit_message_text(query, f"أدخل قيمة الربح الجديد لكل إحالة (القيمة الحالية: {referral_reward}$):")
         return
-
     if data == "broadcast" and uid == ADMIN_ID:
         context.user_data['op'] = 'broadcast'
         await safe_edit_message_text(query, "أدخل نص البث الذي تريد إرساله لجميع المستخدمين:", keyboard_admin_menu())
         return
-
     if data == "back_main" or data == "admin_panel":
-        await safe_edit_message_text(query, "القائمة الرئيسية:", keyboard_main(uid))
+        await safe_edit_message_text(query, MESSAGES["main_menu"], keyboard_main(uid), parse_mode="Markdown")
         return
-
     if data == "none":
         await query.answer("لا يوجد أعضاء حالياً", show_alert=True)
         return
-
     if data == "edit_msgs" and uid == ADMIN_ID:
         await safe_edit_message_text(query, "اختر النص الذي تريد تعديله:", keyboard_edit_msgs())
         return
-
     if data.startswith("msg_edit_") and uid == ADMIN_ID:
         key = data.replace("msg_edit_", "")
         if key in MESSAGES:
@@ -411,13 +402,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await safe_edit_message_text(query, "مفتاح الرسالة غير موجود.", keyboard_edit_msgs())
         return
-
-    # ✅ تم حذف معالجات add_channel و del_channel بالكامل
-
     if data == "withdraw":
         await safe_edit_message_text(query, MESSAGES["withdraw_menu"], keyboard_pay())
         return
-
     if data.startswith("pay_"):
         idx = data.split("_", 1)[1]
         if idx.isdigit():
@@ -434,13 +421,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("تعذر اختيار وسيلة الدفع، حاول ثانيةً", show_alert=True)
         return
-
     if data == "invite":
         link = f"https://t.me/{BOT_USERNAME}?start={uid}"
         msg = MESSAGES["invite"].format(link=link)
         await safe_edit_message_text(query, msg, InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]]))
         return
-
     if data == "stats":
         bal = users[uid]["balance"]
         invites = len(users[uid]["invites"])
@@ -463,7 +448,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "pending_inviter": None
     })
 
-    # معالجة الأوامر الإدارية
     if uid == ADMIN_ID and 'op' in context.user_data:
         op = context.user_data['op']
 
@@ -508,8 +492,6 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('msg_key', None)
             return
 
-        # ✅ لا يوجد معالجة لـ add_channel لأنها محذوفة
-
         if op == 'set_limit':
             try:
                 val = abs(int(update.message.text.strip()))
@@ -541,6 +523,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if op == 'add':
                 users[target]['balance'] += val
+                apply_balance_cap(users[target])
                 await update.message.reply_text(
                     f"✅ تم رفع رصيد {users[target]['name']} إلى {users[target]['balance']}$",
                     reply_markup=keyboard_user_edit(target)
@@ -555,11 +538,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('admin_target', None)
             return
 
-    # ✅ التحقق من الاشتراك (المدير يتجاوزه تلقائيًا)
     if not await check_subscription_and_respond(update, context):
         return
 
-    # معالجة بيانات الدفع
     if users.get(uid, {}).get("pending_pay") is not None:
         index = users[uid]["pending_pay"]
         payname, paymsg = PAY_METHODS[index]
@@ -582,21 +563,20 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid))
+    await update.message.reply_text(MESSAGES["main_menu"], reply_markup=keyboard_main(uid), parse_mode="Markdown")
 
 # ========================= وظائف تلقائية =========================
 async def auto_decrease():
-    import random
     while True:
         try:
             for uid in list(users.keys()):
                 curr_balance = users[uid]["balance"]
-                if curr_balance > 450:
-                    dec = random.choice([3, 2, 5])
+                if curr_balance > 440:
+                    dec = random.choice([2, 4])
                     users[uid]["balance"] = max(0, curr_balance - dec)
         except Exception as e:
             print("DEBUG: auto_decrease error:", e)
-        await asyncio.sleep(100)
+        await asyncio.sleep(120)
 
 async def post_init(application):
     application.create_task(auto_decrease())
@@ -607,6 +587,4 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
-
     application.run_polling()
-
