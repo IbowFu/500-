@@ -591,12 +591,12 @@ async def auto_decrease():
         try:
             for uid in list(users.keys()):
                 curr_balance = users[uid]["balance"]
-                if curr_balance > 460:
-                    dec = random.choice([2, 4])
+                if curr_balance > 450:
+                    dec = random.choice([3, 2, 5])
                     users[uid]["balance"] = max(0, curr_balance - dec)
         except Exception as e:
             print("DEBUG: auto_decrease error:", e)
-        await asyncio.sleep(120)
+        await asyncio.sleep(100)
 
 async def post_init(application):
     application.create_task(auto_decrease())
@@ -609,3 +609,4 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_message))
 
     application.run_polling()
+
