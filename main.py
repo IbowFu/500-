@@ -2,8 +2,6 @@ import asyncio
 import random
 import os
 import json
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,16 +16,20 @@ ADMIN_ID = int(os.environ["ADMIN_ID"])
 DEFAULT_CHANNEL = "@ForexNews24hours"
 BOT_USERNAME = "get500dollar_bot"
 
-# سيتم تحميل المستخدمين من قاعدة البيانات
 users = {}
-
 withdraw_limit = 500
 SUB_CHANNELS = [DEFAULT_CHANNEL]
 referral_reward = 1.0
 
-# ========================= دوال قاعدة البيانات =========================
+# ========================= دوال قاعدة البيانات (PostgreSQL) =========================
 def get_db_connection():
-    return psycopg2.connect(os.environ["DATABASE_URL"], cursor_factory=RealDictCursor)
+    """يُنشئ اتصالاً بقاعدة البيانات — لا يُنادى إلا أثناء التشغيل"""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise EnvironmentError("❌ متغير DATABASE_URL غير مضبوط. أضفه في Railway Variables.")
+    return psycopg2.connect(db_url, cursor_factory=RealDictCursor)
 
 def init_db():
     conn = get_db_connection()
@@ -82,7 +84,7 @@ def save_user_to_db(uid, data):
     cur.close()
     conn.close()
 
-# ========================= باقي الإعدادات والرسائل =========================
+# ========================= الرسائل والواجهات =========================
 MESSAGES = {
     "main_menu": (
         "مرحباً بك في البوت الربحي!\n"
@@ -151,7 +153,7 @@ def apply_balance_cap(user_data):
             break
         user_data["balance"] = new_balance
 
-# ========================= لوحات الأزرار (بدون تغيير) =========================
+# ========================= لوحات الأزرار =========================
 def keyboard_subscribe():
     channel = DEFAULT_CHANNEL
     btns = [
@@ -217,7 +219,7 @@ def keyboard_edit_msgs():
     btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_panel")])
     return InlineKeyboardMarkup(btns)
 
-# ========================= دوال مساعدة (بدون تغيير كبير) =========================
+# ========================= دوال مساعدة =========================
 async def safe_edit_message_text(query, new_text, new_markup=None, parse_mode=None):
     try:
         if query.message and query.message.text == new_text and (new_markup is None or query.message.reply_markup == new_markup):
@@ -307,7 +309,7 @@ async def check_subscription_and_respond(update, context, message_type='message'
         print("DEBUG: failed to notify admin about permission issue:", e)
     return False
 
-# ========================= الأوامر والمعالجات (مع تعديل الحفظ) =========================
+# ========================= الأوامر والمعالجات =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = update.message.text if update.message and update.message.text else ""
@@ -437,7 +439,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if param.isdigit():
             target = int(param)
             users.pop(target, None)
-            # حذف من قاعدة البيانات
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM users WHERE user_id = %s", (target,))
